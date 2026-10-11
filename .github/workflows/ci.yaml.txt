@@ -1,0 +1,78 @@
+name: CI & GitOps Sync
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: flask-gitops-app
+  CONFIG_REPO: <YOUR_GITHUB_USERNAME>/gitops-k8s-config
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Tests
+        run: |
+          pip install -r requirements.txt
+          pytest test_app.py
+
+      - name: Build Local Image for Scanning
+        run: |
+          docker build -t flask-gitops-app:${{ github.sha }} .
+
+      - name: Run Trivy Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-gitops-app:${{ github.sha }}
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+  build-and-push:
+    needs: test-and-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Update Image Tag in GitOps Config Repo
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git clone https://${{ secrets.GITOPS_PAT }}@github.com/${{ env.CONFIG_REPO }}.git config-repo
+          cd config-repo
+          # Update the tag in Helm values.yaml
+          sed -i "s/tag: .*/tag: \"${{ github.sha }}\"/" values.yaml || true
+          git add values.yaml
+          git commit -m "Auto-update image tag to ${{ github.sha }} [skip ci]" || echo "No changes to commit"
+          git push origin main
