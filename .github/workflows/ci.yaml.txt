@@ -7,7 +7,7 @@ on:
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: flask-gitops-app
-  CONFIG_REPO: <YOUR_GITHUB_USERNAME>/gitops-k8s-config
+  CONFIG_REPO: chandrikagudi/gitops-k8s-config
 
 jobs:
   test-and-scan:
